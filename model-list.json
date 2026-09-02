@@ -1,0 +1,34 @@
+{
+    "models": [
+        {
+            "name": "10Eros_v1.4_fp8mixed_learned.safetensors",
+            "type": "checkpoint",
+            "base": "LTX-2.3",
+            "save_path": "checkpoints/custom",
+            "description": "comfy-panel custom entry",
+            "reference": "https://huggingface.co/TenStrip/LTX2.3-10Eros",
+            "filename": "10Eros_v1.4_fp8mixed_learned.safetensors",
+            "url": "https://huggingface.co/TenStrip/LTX2.3-10Eros/resolve/main/10Eros_v1.4_fp8mixed_learned.safetensors"
+        },
+        {
+            "name": "gemma_3_12B_it_fp4_mixed.safetensors",
+            "type": "clip",
+            "base": "LTX-2.3",
+            "save_path": "text_encoders/custom",
+            "description": "comfy-panel custom entry",
+            "reference": "https://huggingface.co/Comfy-Org/ltx-2",
+            "filename": "gemma_3_12B_it_fp4_mixed.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+        },
+        {
+            "name": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+            "type": "lora",
+            "base": "LTX-2.3",
+            "save_path": "loras/custom",
+            "description": "comfy-panel custom entry",
+            "reference": "https://huggingface.co/Comfy-Org/ltx-2.3",
+            "filename": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
+        }
+    ]
+}
