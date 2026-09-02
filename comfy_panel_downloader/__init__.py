@@ -26,24 +26,21 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 
 
 def _download(url: str, dest_path: str):
-    tmp_path = dest_path + ".part"
+    # comfy-panel側の進捗表示は/experiment/models/<folder>（本番のファイル名でサイズを見る）を
+    # ポーリングする仕組みなので、一時ファイル名(.part等)を使わず本番のファイル名に直接書き込む。
+    # 個人用ツールなので、失敗時に不完全なファイルが残るリスクより進捗が見えることを優先する。
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "comfy-panel/1.0"})
-        with urllib.request.urlopen(req) as response, open(tmp_path, "wb") as out_file:
+        with urllib.request.urlopen(req) as response, open(dest_path, "wb") as out_file:
             while True:
                 chunk = response.read(8 * 1024 * 1024)
                 if not chunk:
                     break
                 out_file.write(chunk)
-        os.replace(tmp_path, dest_path)
         print(f"[comfy_panel_downloader] done: {dest_path}")
     except Exception as e:
         print(f"[comfy_panel_downloader] failed: {url} -> {dest_path}: {e}")
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
 
 
 @PromptServer.instance.routes.post("/comfy_panel/download")
