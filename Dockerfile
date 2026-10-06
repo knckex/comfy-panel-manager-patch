@@ -17,7 +17,14 @@
 #
 # 配置先の /opt/comfyui-baked は、start.shが起動時に /workspace/.../ComfyUI へ
 # 同期する"焼き込み済みComfyUI"の実体。
-FROM runpod/comfyui:latest
+# ベースは :latest ではなくバージョン固定にする。
+# 2026-10-06、:latest が runpod-slim系（ComfyUI 0.35.0同梱）へ更新された状態でビルドしたところ、
+# 作ったPodが2台とも（別マシンでも）ComfyUIが8188で応答しないまま15〜30分経っても起動せず、
+# RunPodのプロキシが "Waiting for service to respond" を返し続けた。
+# ベースの起動処理（/start.sh）周りが変わったと見られるため、それまで実績のある
+# 「ComfyUI 0.30.0 + CUDA 12.8」のタグへ固定する（この上で下のRUNが v0.33.1 へ引き上げる）。
+# ベースを上げたくなったら、ここを1つ上げて実機で起動確認してから採用すること。
+FROM runpod/comfyui:1.3.3-comfyuiv0.30.0-cuda12.8
 
 # 必要最低バージョン。ベース側がこれ以上なら何もしない（勝手に下げない）
 ARG COMFYUI_VERSION=v0.33.1
