@@ -65,11 +65,15 @@ COPY comfy_panel_downloader /opt/comfyui-baked/custom_nodes/comfy_panel_download
 # 稼働中のPodにはComfyUI-Manager経由でも入れられる（Comfy Registryに bfsnodes として登録済み）が、
 # start.shが起動時に /opt/comfyui-baked から同期し直す作りのため、消える可能性がある。だからここで焼き込む。
 #
-# requirements.txt（insightface / onnxruntime / librosa / opencv / scenedetect）は入れない。
-# Face IDに使うモジュール ltx_identity_overlap.py の依存は torch / numpy / safetensors だけで、
-# __init__.py が無条件に読み込む他のモジュールもこれらを関数内でしか import していないため
-# （実機の /object_info にLTXIdentityTransferが出ることを確認済み）。
-# insightfaceはArcFace projector（作者いわく効果は限定的で任意）専用で、ビルドも重いので省く。
+# 依存の宣言（requirements.txt と pyproject.toml の dependencies）は消してから焼く。これは必須。
+# ベースのstart.shはPod起動時にcustom_nodes配下の依存をpip installしようとするが、
+# BFSNodesが要求する insightface==0.7.3 はPyPIにwheelが無くsdistのみ＝その場でC++ビルドが走る。
+# これを入れたままPodを作ると、起動のたびにコンパイルでブロックされ、ComfyUIが8188で待ち受けないまま
+# 15分以上経ってもRunPodのプロキシが502を返し続ける（2026-10-06、別マシン3台で再現）。
+# Face IDに使う ltx_identity_overlap.py の依存は torch / numpy / safetensors だけで、
+# __init__.py が無条件に読み込む他のモジュールもそれ以外を関数内でしか import していないため、
+# 依存宣言を消しても LTXIdentityTransfer は問題なく登録される（実機の/object_infoで確認済み）。
+# insightfaceが要るのはArcFace projector（作者いわく効果は限定的で任意）だけ。
 ARG BFSNODES_COMMIT=90face345c168862f0b7aa9154dc49d9a52db536
 RUN set -eu; \
     git clone --filter=blob:none --no-checkout https://github.com/alisson-anjos/ComfyUI-BFSNodes.git \
@@ -77,4 +81,7 @@ RUN set -eu; \
     cd /opt/comfyui-baked/custom_nodes/ComfyUI-BFSNodes; \
     git checkout -q "$BFSNODES_COMMIT"; \
     rm -rf .git; \
-    echo "BFSNodes pinned at $BFSNODES_COMMIT"
+    rm -f requirements.txt; \
+    sed -i '/^dependencies = \[/,/^\]/c\dependencies = []' pyproject.toml; \
+    echo "BFSNodes pinned at $BFSNODES_COMMIT (依存宣言は削除済み)"; \
+    grep -n 'dependencies' pyproject.toml
