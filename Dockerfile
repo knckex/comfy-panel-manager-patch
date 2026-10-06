@@ -48,3 +48,26 @@ RUN set -eu; \
     fi
 
 COPY comfy_panel_downloader /opt/comfyui-baked/custom_nodes/comfy_panel_downloader
+
+# LTX-2.3の「Face ID」モード（参照画像で同じ人物の動画を作る）に必要なカスタムノード。
+# 使うのは ComfyUI-BFSNodes の LTXIdentityTransfer（= LTXIdentityOverlapConditioning）1個だけ。
+# これはLTX-Best-Face-ID LoRA（Alissonerdx）が学習した座標の約束事
+# （参照latentをframe-0のRoPEグリッドに重ね、source_id=2の回転位相タグを付ける）を再現するノードで、
+# これを通さないとLoRAを読み込んでも同一性転写はまったく効かない。
+#
+# 稼働中のPodにはComfyUI-Manager経由でも入れられる（Comfy Registryに bfsnodes として登録済み）が、
+# start.shが起動時に /opt/comfyui-baked から同期し直す作りのため、消える可能性がある。だからここで焼き込む。
+#
+# requirements.txt（insightface / onnxruntime / librosa / opencv / scenedetect）は入れない。
+# Face IDに使うモジュール ltx_identity_overlap.py の依存は torch / numpy / safetensors だけで、
+# __init__.py が無条件に読み込む他のモジュールもこれらを関数内でしか import していないため
+# （実機の /object_info にLTXIdentityTransferが出ることを確認済み）。
+# insightfaceはArcFace projector（作者いわく効果は限定的で任意）専用で、ビルドも重いので省く。
+ARG BFSNODES_COMMIT=90face345c168862f0b7aa9154dc49d9a52db536
+RUN set -eu; \
+    git clone --filter=blob:none --no-checkout https://github.com/alisson-anjos/ComfyUI-BFSNodes.git \
+        /opt/comfyui-baked/custom_nodes/ComfyUI-BFSNodes; \
+    cd /opt/comfyui-baked/custom_nodes/ComfyUI-BFSNodes; \
+    git checkout -q "$BFSNODES_COMMIT"; \
+    rm -rf .git; \
+    echo "BFSNodes pinned at $BFSNODES_COMMIT"
