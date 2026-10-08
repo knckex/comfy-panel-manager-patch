@@ -17,16 +17,24 @@ ComfyUI-Managerの/manager/queue/install_modelは、自分の配布DB(model-list
     body: {"folder": "...", "filename": "..."}
     → 進行中のダウンロードを中止し、書きかけのファイルを消す。
     ダウンロードは専用スレッドで走っているので外から強制終了はできない。代わりに
-    threading.Eventを立て、チャンクを書くループが自分で気づいて抜ける方式にしている
-    （8MBチャンクごとに見るので、押してから実際に止まるまで最大1チャンクぶんの間がある）。
+    threading.Eventを立て、チャンクを書くループが自分で気づいて抜ける方式にしている。
 
   GET /comfy_panel/downloads
     → 今動いているダウンロードの一覧。ページを開き直した後でも「何が走っているか」を
     画面側が復元できるようにするためのもの。
+
+再試行とレジューム（2026-10-08に追加）:
+  以前は接続が切れるとスレッドがそのまま終わり、書きかけのファイルだけが残って
+  「進捗が何時間も動かない」状態になっていた（25GBのチェックポイントが2%で停止、
+  4.7GBのLoRAが23%で停止、という形で実機で複数回発生）。
+  そこで切断時は、落とせたところまでのバイト数を Range ヘッダで指定して続きから再開する。
+  最初からやり直さないので、長い本体ファイルでも落としきれる。
 """
 
 import os
 import threading
+import time
+import urllib.error
 import urllib.request
 
 from aiohttp import web
@@ -36,10 +44,30 @@ import folder_paths
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
+# 1本のダウンロードで何回まで再接続を試みるか。ここを使い切ったら諦めて書きかけを残す
+# （画面側が「N秒間進んでいません」で気づける）。
+MAX_ATTEMPTS = 8
+# 再接続の間隔（秒）。回数に応じて伸ばす（5, 10, 20, 40, 60, 60...）
+RETRY_BASE_DELAY = 5
+RETRY_MAX_DELAY = 60
+CHUNK_SIZE = 8 * 1024 * 1024
+
 # 進行中のダウンロード。 dest_path -> {"cancel": Event, "url": str}
-# ダウンロード開始/終了/中止でしか触らないので、ロック1本で十分。
 _active = {}
 _active_lock = threading.Lock()
+
+
+def _open_stream(url: str, resume_from: int):
+    """URLを開く。resume_from>0ならRangeヘッダで続きから要求する。"""
+    headers = {"User-Agent": "comfy-panel/1.0"}
+    if resume_from > 0:
+        headers["Range"] = f"bytes={resume_from}-"
+    req = urllib.request.Request(url, headers=headers)
+    response = urllib.request.urlopen(req)
+    # 206 Partial Content ならサーバーがレジュームを受け入れた。
+    # 200が返ってきた場合はRangeが無視されて先頭から送られてくるので、こちらも先頭から書き直す。
+    resumed = response.status == 206 if resume_from > 0 else False
+    return response, resumed
 
 
 def _download(url: str, dest_path: str, cancel: threading.Event):
@@ -49,16 +77,52 @@ def _download(url: str, dest_path: str, cancel: threading.Event):
     cancelled = False
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        req = urllib.request.Request(url, headers={"User-Agent": "comfy-panel/1.0"})
-        with urllib.request.urlopen(req) as response, open(dest_path, "wb") as out_file:
-            while True:
+        downloaded = 0
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if cancel.is_set():
+                cancelled = True
+                break
+            try:
+                response, resumed = _open_stream(url, downloaded)
+                # レジュームできなかった（サーバーがRange非対応）ときだけ先頭から書き直す
+                mode = "ab" if resumed else "wb"
+                if not resumed:
+                    downloaded = 0
+                with response, open(dest_path, mode) as out_file:
+                    while True:
+                        if cancel.is_set():
+                            cancelled = True
+                            break
+                        chunk = response.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                if cancelled:
+                    break
+                print(f"[comfy_panel_downloader] done: {dest_path} ({downloaded} bytes)")
+                return
+            except Exception as e:
                 if cancel.is_set():
                     cancelled = True
                     break
-                chunk = response.read(8 * 1024 * 1024)
-                if not chunk:
+                # 実際に書けたバイト数を見てから次を要求する（途中までバッファに残っている場合に備える）
+                try:
+                    downloaded = os.path.getsize(dest_path)
+                except OSError:
+                    downloaded = 0
+                if attempt >= MAX_ATTEMPTS:
+                    print(f"[comfy_panel_downloader] giving up after {attempt} attempts: {dest_path}: {e}")
+                    return
+                delay = min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), RETRY_MAX_DELAY)
+                print(f"[comfy_panel_downloader] attempt {attempt} failed ({e}); "
+                      f"resuming from {downloaded} bytes in {delay}s: {dest_path}")
+                # 待っている間も中止できるようにEventのwaitで眠る
+                if cancel.wait(delay):
+                    cancelled = True
                     break
-                out_file.write(chunk)
+
         if cancelled:
             # 書きかけのファイルは消す。残すと「配置済み」に見えてしまい、
             # 生成時に壊れたモデルを読み込もうとして分かりにくい失敗になる。
@@ -67,8 +131,6 @@ def _download(url: str, dest_path: str, cancel: threading.Event):
             except OSError:
                 pass
             print(f"[comfy_panel_downloader] cancelled: {dest_path}")
-        else:
-            print(f"[comfy_panel_downloader] done: {dest_path}")
     except Exception as e:
         print(f"[comfy_panel_downloader] failed: {url} -> {dest_path}: {e}")
     finally:
@@ -110,6 +172,14 @@ async def comfy_panel_download(request):
             return web.json_response({"success": True, "path": dest_path, "alreadyRunning": True})
         cancel = threading.Event()
         _active[dest_path] = {"cancel": cancel, "url": url}
+
+    # 再開始のときに前回の書きかけが残っていると、それを「落とし済み」と誤認して
+    # 途中から追記してしまう。開始時は必ず消してから始める
+    # （途中から再開するのは、同じスレッドが切断を検知した場合だけ）。
+    try:
+        os.remove(dest_path)
+    except OSError:
+        pass
 
     thread = threading.Thread(target=_download, args=(url, dest_path, cancel), daemon=True)
     thread.start()
