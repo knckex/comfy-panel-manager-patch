@@ -7,7 +7,11 @@
 # 完全一致するURLしか受け付けない仕様（実機検証済み。security_level/channel_urlの変更では回避できない）。
 # そこでComfyUI自体のWebサーバーに、自前の /comfy_panel/download エンドポイントを1本追加する。
 #
-# 背景2（ComfyUIの引き上げ）: runpod/comfyui:latest が積んでいたComfyUI 0.30.0では、
+# 背景2（ComfyUIの引き上げ）: Qwen Image 2.1に必要な TextEncodeQwenImage21 は v0.37.0 以降にしか無い。
+# そこでv0.40.0まで引き上げる。既存ページが使うノードが消えていないことは事前に確認済み
+# （LTX-2.3のLTXAVTextEncoderLoaderはnodes_lt_audio.pyに健在、MiniMaxH3ImageToVideoも健在、
+#  nodes_lt.pyから削除されたLTXノードは0個）。
+# もともとの引き上げ理由: runpod/comfyui:latest が積んでいたComfyUI 0.30.0では、
 # LTX-2.5のGemma4テキストエンコーダーが動かない。comfy/text_encoders/gemma4.py の process_tokens が
 # 戻り値1個なのに本体側は4個を期待しており、CLIPTextEncodeで
 # "not enough values to unpack (expected 4, got 1)" になる（実機で確認）。
@@ -27,7 +31,7 @@
 FROM runpod/comfyui:1.3.3-comfyuiv0.30.0-cuda12.8
 
 # 必要最低バージョン。ベース側がこれ以上なら何もしない（勝手に下げない）
-ARG COMFYUI_VERSION=v0.33.1
+ARG COMFYUI_VERSION=v0.40.0
 
 RUN set -eu; \
     cd /opt/comfyui-baked; \
