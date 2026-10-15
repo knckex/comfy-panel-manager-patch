@@ -20,6 +20,12 @@ ComfyUI-Managerの/manager/queue/install_modelは、自分の配布DB(model-list
     threading.Eventを立て、チャンクを書くループが自分で気づいて抜ける方式にしている。
 
   GET /comfy_panel/downloads
+    → 今動いているダウンロードの一覧。
+
+  GET  /comfy_panel/files?kind=input
+  POST /comfy_panel/files/delete
+    → アップロードした画像(input)・生成した画像(output)の一覧と削除。
+    ComfyUI本体にはこれらを消すAPIが無いため用意している。
     → 今動いているダウンロードの一覧。ページを開き直した後でも「何が走っているか」を
     画面側が復元できるようにするためのもの。
 
@@ -224,4 +230,107 @@ async def comfy_panel_downloads(request):
     return web.json_response({
         "success": True,
         "downloads": [os.path.relpath(p, folder_paths.models_dir).replace("\\", "/") for p in paths],
+    })
+
+
+# ---- アップロードした画像・生成した画像の掃除 ----
+# ComfyUI本体には input/output のファイルを消すAPIが無い（v0.40.0のserver.pyで確認）。
+# 参照画像として上げた写真がPodに残り続けるのは気持ちの良いものではないので、
+# 一覧と削除だけできる最小のエンドポイントを足す。
+#
+#   GET  /comfy_panel/files?kind=input        → 一覧（名前・サイズ・更新時刻）
+#   POST /comfy_panel/files/delete            → {"kind":"input","filenames":[...]}  個別に削除
+#                                               {"kind":"input","all":true}         まとめて削除
+#
+# 対象は input と output のみ。models配下はダウンロード側(cancel)が受け持つ。
+
+_IO_DIRS = {
+    "input": folder_paths.get_input_directory,
+    "output": folder_paths.get_output_directory,
+}
+
+
+def _io_dir(kind: str):
+    getter = _IO_DIRS.get(kind)
+    return getter() if getter else None
+
+
+def _safe_join(base: str, filename: str):
+    """ベースディレクトリの外へ出ないことを確かめてから結合する。
+    （filenameに .. や絶対パスが入っていても外に出さない）"""
+    candidate = os.path.normpath(os.path.join(base, filename))
+    base_real = os.path.realpath(base)
+    if os.path.realpath(os.path.dirname(candidate)) != base_real:
+        return None
+    return candidate
+
+
+@PromptServer.instance.routes.get("/comfy_panel/files")
+async def comfy_panel_files(request):
+    kind = request.query.get("kind", "input")
+    base = _io_dir(kind)
+    if base is None:
+        return web.json_response({"error": "kind must be input or output"}, status=400)
+
+    files = []
+    total = 0
+    for root, _dirs, names in os.walk(base):
+        for name in names:
+            path = os.path.join(root, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            total += st.st_size
+            files.append({
+                "name": os.path.relpath(path, base).replace("\\", "/"),
+                "size": st.st_size,
+                "modified": st.st_mtime,
+            })
+    files.sort(key=lambda f: f["modified"], reverse=True)
+    return web.json_response({"success": True, "kind": kind, "files": files, "totalBytes": total})
+
+
+@PromptServer.instance.routes.post("/comfy_panel/files/delete")
+async def comfy_panel_files_delete(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+
+    kind = (data.get("kind") or "input").strip()
+    base = _io_dir(kind)
+    if base is None:
+        return web.json_response({"error": "kind must be input or output"}, status=400)
+
+    if data.get("all"):
+        targets = []
+        for root, _dirs, names in os.walk(base):
+            for name in names:
+                targets.append(os.path.relpath(os.path.join(root, name), base))
+    else:
+        targets = data.get("filenames") or []
+        if not isinstance(targets, list):
+            return web.json_response({"error": "filenames must be a list"}, status=400)
+
+    deleted = []
+    failed = []
+    freed = 0
+    for name in targets:
+        path = _safe_join(base, str(name))
+        if path is None or not os.path.isfile(path):
+            failed.append(str(name))
+            continue
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+            deleted.append(str(name))
+            freed += size
+        except OSError as e:
+            print(f"[comfy_panel_downloader] delete failed: {path}: {e}")
+            failed.append(str(name))
+
+    print(f"[comfy_panel_downloader] deleted {len(deleted)} file(s) from {kind} ({freed} bytes)")
+    return web.json_response({
+        "success": True, "deleted": deleted, "failed": failed, "freedBytes": freed,
     })
